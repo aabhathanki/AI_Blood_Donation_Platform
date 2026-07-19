@@ -11,13 +11,23 @@ from app.models.slot import DonationSlot, Appointment
 from app.models.inventory import BloodInventory
 from app.services.donor_recommendation import BLOOD_COMPATIBILITY, get_compatible_donor_groups
 
-# Standard Medical FAQ responses
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage as LcAIMessage
+
+# Standard Medical FAQ responses based on WHO and American Red Cross Guidelines
 FAQ_RESPONSES = {
     "safety": "Yes, blood donation is extremely safe. Sterile, single-use needles and equipment are used for each donor, ensuring zero risk of contracting bloodborne infections.",
     "process": "The entire process takes about 45-60 minutes. It includes registration, a brief medical screening (checking pulse, blood pressure, temperature, and hemoglobin), the donation itself (8-10 minutes), and a short rest period with refreshments.",
     "recovery": "Your body replaces blood volume within 24-48 hours. Red blood cells take about 4 to 6 weeks to fully regenerate. We recommend drinking plenty of fluids and avoiding strenuous exercise for 24 hours.",
     "benefits": "Donating blood stimulates the production of new red blood cells, helps maintain healthy iron levels in the body, and includes a free mini-health screening. Plus, a single donation can save up to three lives!",
-    "frequency": "Whole blood donors can donate once every 56 days (8 weeks) for men, and once every 90 days (12 weeks) for women, to allow full iron replenishment.",
+    "frequency": "Whole blood donors can donate once every 56 days (8 weeks) for men, and once every 90 days (12 weeks) for women, per American Red Cross guidelines, to allow full iron replenishment.",
+    "diet_pre": "**Pre-Donation Nutrition & Hydration Guidelines**:\n\n• **Hydration**: Drink an extra 16-24 oz (approx. 500-700 ml) of water or non-alcoholic fluids 2-3 hours before donating.\n• **Iron-Rich Foods**: Eat iron-dense meals 2-3 days prior (spinach, lentils, beans, fortified cereals, eggs, or lean red meats).\n• **Avoid Fatty Foods**: Avoid high-fat foods (e.g. ice cream, fast food, fried foods) right before donation, as excess lipids can cause plasma test interference.\n• **Rest**: Get a full 7-8 hours of sleep the night before.",
+    "diet_post": "**Post-Donation Recovery & Diet**:\n\n• **Fluids**: Drink extra water or electrolyte fluids for the next 24-48 hours.\n• **Snacks**: Consume a light snack containing complex carbs and fruit juices immediately following donation to restore blood sugar.\n• **Avoid**: Avoid heavy physical labor, heavy lifting, or strenuous workouts for 24 hours.\n• **Alcohol & Smoking**: Avoid alcohol for 24 hours post-donation and refrain from smoking for at least 2 hours.",
+    "tattoo_piercing": "**Tattoo & Piercing Deferral Rules (WHO / Red Cross)**:\n\n• **State-Regulated Facilities**: If your tattoo or piercing was applied at a licensed, state-regulated facility using single-use sterile equipment, there is **no deferral wait** in many jurisdictions.\n• **Non-Regulated / Unsterile**: If received at an unregulated shop or done with non-sterile equipment, WHO and Red Cross mandate a **6-month deferral period** to rule out bloodborne pathogen risks (e.g. Hepatitis B/C).",
+    "travel_deferral": " **Travel & Endemic Disease Deferrals (WHO Standards)**:\n\n• **Malaria-Endemic Regions**: Travelers returning from malaria-risk areas must defer donation for **12 months** after departure.\n• **Dengue / Zika Viruses**: Defer for **120 days (4 months)** following recovery from Dengue or Zika virus infections.\n• **COVID-19 / Flu**: Defer for 14 days following full symptom resolution.",
+    "medication": "**Medication & Treatment Guidelines**:\n\n• **Antibiotics**: Must complete the full course of oral antibiotics and be symptom-free for **7 days** before donating.\n• **Aspirin**: If donating platelets, aspirin must be stopped at least **48 hours** prior (no restriction for whole blood donation).\n• **Blood Thinners / Isotretinoin**: Require specific deferral periods (e.g. 1 month for Accutane/Isotretinoin, varies for anticoagulants). Consult clinical screening staff.",
+    "alcohol_smoking": "**Alcohol & Smoking Restrictions**:\n\n• **Alcohol**: Do not consume alcohol for **24 hours prior** to donation (causes dehydration and blood pressure fluctuation) and for **24 hours after** donation.\n• **Smoking**: Avoid smoking for at least **2 hours before** and **2 hours after** donation to prevent dizziness, lightheadedness, and carbon monoxide elevation.",
+    "guidelines": "**Official WHO & American Red Cross Guidelines Overview**:\n\n• **Age**: 18–65 years (up to 70 for regular donors with medical approval).\n• **Weight**: Minimum 50 kg (110 lbs).\n• **Hemoglobin**: Minimum 12.5 g/dL for females, 13.0 g/dL for males.\n• **Pulse & Blood Pressure**: Pulse 60-100 bpm, Systolic BP 90-180 mmHg, Diastolic BP 50-100 mmHg.\n• **Vital Safety**: Sterile single-use disposable needles used exclusively."
 }
 
 # Regex patterns
@@ -77,50 +87,39 @@ class AIService:
 
     @staticmethod
     def _call_gemini_api(history: list[AIMessage], user_message: str) -> str:
-        """Call Gemini API via REST endpoint."""
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={settings.GEMINI_API_KEY}"
+        """Call Gemini API via LangChain ChatGoogleGenerativeAI using WHO and American Red Cross guidelines."""
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-2.5-flash",
+            google_api_key=settings.GEMINI_API_KEY,
+            temperature=0.3,
+            max_output_tokens=800
+        )
         
-        # Build prompt & system instructions
         system_instruction = (
-            "You are a compassionate, professional medical chatbot assistant on our AI Blood Donation Platform. "
-            "You help users check their donation eligibility, answer compatibility questions, guide them on how to request blood, "
-            "explain safety procedures, and detect medical emergencies. "
-            "If a user needs blood, advise them to use the emergency request form or specify their blood group and city. "
-            "Always maintain a supportive and informative tone. Do not give direct prescribing advice."
+            "You are an expert healthcare AI assistant specialized in blood donation, clinical eligibility, and transfusion medicine. "
+            "Your knowledge strictly adheres to official World Health Organization (WHO) and American Red Cross guidelines.\n\n"
+            "Core Guidelines You Follow:\n"
+            "1. Eligibility: Donors must be 18-65 years old (weight >= 50kg). Hemoglobin >= 12.5 g/dL (females) or >= 13.0 g/dL (males).\n"
+            "2. Frequency: Minimum wait time between whole blood donations is 56 days (8 weeks) for men and 90 days (12 weeks) for women.\n"
+            "3. Deferrals: 6 months for non-sterile tattoos/piercings; 12 months post-travel to malaria-endemic areas; 7 days post completion of antibiotics; 48 hours aspirin restriction for platelet donation.\n"
+            "4. Nutrition & Safety: Advise 16-24 oz pre-hydration, iron-rich meals, avoiding high-fat meals prior to donation, and refraining from alcohol for 24 hrs and smoking 2 hrs before/after.\n"
+            "5. Tone & Boundaries: Empathetic, clear, and professional. Always advise emergency medical care for acute crises and clarify that your advice does not replace direct clinical consultation."
         )
 
-        contents = []
+        messages = [SystemMessage(content=system_instruction)]
+        
         # Add conversation history (up to last 10 messages for context)
         for msg in history[-11:-1]:
-            role = "user" if msg.sender == "user" else "model"
-            contents.append({
-                "role": role,
-                "parts": [{"text": msg.content}]
-            })
+            if msg.sender == "user":
+                messages.append(HumanMessage(content=msg.content))
+            else:
+                messages.append(LcAIMessage(content=msg.content))
             
         # Add latest user message
-        contents.append({
-            "role": "user",
-            "parts": [{"text": user_message}]
-        })
+        messages.append(HumanMessage(content=user_message))
 
-        payload = {
-            "contents": contents,
-            "systemInstruction": {
-                "parts": [{"text": system_instruction}]
-            },
-            "generationConfig": {
-                "temperature": 0.3,
-                "maxOutputTokens": 800
-            }
-        }
-
-        headers = {"Content-Type": "application/json"}
-        response = requests.post(url, json=payload, headers=headers, timeout=10)
-        response.raise_for_status()
-        
-        data = response.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"]
+        response = llm.invoke(messages)
+        return response.content
 
     @staticmethod
     def _local_rules_engine(db: Session, history: list[AIMessage], user_message: str, user_id: int = None) -> tuple[str, str, dict]:
@@ -156,12 +155,29 @@ class AIService:
                 elif "chronic medical conditions" in prev_lower:
                     last_question = "ask_medical"
 
-        # If user explicitly wants to check eligibility or we are in the middle of it
+        # Check if user is asking a specific Medical FAQ topic first (unless mid-questionnaire)
+        if not last_question:
+            if any(w in msg_lower for w in ["who", "red cross", "guidelines", "standard"]):
+                return FAQ_RESPONSES["guidelines"], "ask_faqs", {"topic": "guidelines"}
+            if any(w in msg_lower for w in ["alcohol", "beer", "smoke", "smoking", "cigarette"]):
+                return FAQ_RESPONSES["alcohol_smoking"], "ask_faqs", {"topic": "alcohol_smoking"}
+            if any(w in msg_lower for w in ["tattoo", "piercing"]):
+                return FAQ_RESPONSES["tattoo_piercing"], "ask_faqs", {"topic": "tattoo_piercing"}
+            if any(w in msg_lower for w in ["travel", "malaria", "zika", "dengue", "abroad", "vacation"]):
+                return FAQ_RESPONSES["travel_deferral"], "ask_faqs", {"topic": "travel_deferral"}
+            if any(w in msg_lower for w in ["medication", "medicine", "antibiotic", "aspirin", "pill"]):
+                return FAQ_RESPONSES["medication"], "ask_faqs", {"topic": "medication"}
+            if any(w in msg_lower for w in ["eat", "food", "diet", "iron", "water", "pre donation"]):
+                return FAQ_RESPONSES["diet_pre"], "ask_faqs", {"topic": "diet_pre"}
+            if any(w in msg_lower for w in ["snack", "post donation", "recover diet"]):
+                return FAQ_RESPONSES["diet_post"], "ask_faqs", {"topic": "diet_post"}
+
+        # If user explicitly wants to check general eligibility or we are in the middle of it
         if "eligible" in msg_lower or "can i donate" in msg_lower or last_question:
             # We are in the eligibility check flow
             if not last_question or "eligible" in msg_lower or "can i donate" in msg_lower:
                 return (
-                    "❤️ Let's check if you are currently eligible to donate blood. It only takes a minute.\n\nFirst, **what is your age in years**?",
+                    " Let's check if you are currently eligible to donate blood. It only takes a minute.\n\nFirst, **what is your age in years**?",
                     "check_eligibility",
                     {"step": "ask_age"}
                 )
@@ -173,7 +189,7 @@ class AIService:
                     age = int(age_match.group(0))
                     if age < 18 or age > 65:
                         return (
-                            f"⚠️ Based on your age ({age} years), you are not eligible to donate. Whole blood donors must be between **18 and 65 years** of age.\n\nThank you for your willingness to help!",
+                            f" Based on your age ({age} years), you are not eligible to donate. Whole blood donors must be between **18 and 65 years** of age.\n\nThank you for your willingness to help!",
                             "check_eligibility",
                             {"step": "result", "eligible": False, "reason": "Age restrictions (must be 18-65)"}
                         )
@@ -196,7 +212,7 @@ class AIService:
                     weight = int(weight_match.group(0))
                     if weight < 50:
                         return (
-                            f"⚠️ Based on your weight ({weight} kg), you are not eligible to donate. Donors must weigh at least **50 kg** to safely donate blood.\n\nThank you for wanting to save lives!",
+                            f"Based on your weight ({weight} kg), you are not eligible to donate. Donors must weigh at least **50 kg** to safely donate blood.\n\nThank you for wanting to save lives!",
                             "check_eligibility",
                             {"step": "result", "eligible": False, "reason": "Weight restrictions (must be >= 50kg)"}
                         )
@@ -216,7 +232,7 @@ class AIService:
             if last_question == "ask_last_donation":
                 if any(yes in msg_lower for yes in ["yes", "yeah", "did", "i did", "2 months", "1 month"]):
                     return (
-                        "⚠️ You are deferred for now. Whole blood donations require a minimum wait time of **90 days (3 months)** between donations to let your iron levels fully restore.\n\nThank you for checking in, please come back when the 3 months have passed!",
+                        " You are deferred for now. Whole blood donations require a minimum wait time of **90 days (3 months)** between donations to let your iron levels fully restore.\n\nThank you for checking in, please come back when the 3 months have passed!",
                         "check_eligibility",
                         {"step": "result", "eligible": False, "reason": "Recent donation deferral"}
                     )
@@ -230,13 +246,13 @@ class AIService:
             if last_question == "ask_medical":
                 if any(no in msg_lower for no in ["no", "none", "don't", "dont", "nothing", "healthy"]):
                     return (
-                        "🎉 **Congratulations! You are eligible to donate blood!**\n\nYour weight, age, and health history meet the safe donation requirements.\n\nWould you like me to help you register as a donor or find nearby donation camps?",
+                        " **Congratulations! You are eligible to donate blood!**\n\nYour weight, age, and health history meet the safe donation requirements.\n\nWould you like me to help you register as a donor or find nearby donation camps?",
                         "check_eligibility",
                         {"step": "result", "eligible": True}
                     )
                 else:
                     return (
-                        "⚠️ Based on your medical indications, you may have a deferral period. For example, major surgeries or tattoos require a **6-month deferral**, and chronic conditions like cardiovascular diseases require medical clearance.\n\nWe advise consulting a hospital representative or visiting our partner donation camps for a professional health checkup before donating.",
+                        " Based on your medical indications, you may have a deferral period. For example, major surgeries or tattoos require a **6-month deferral**, and chronic conditions like cardiovascular diseases require medical clearance.\n\nWe advise consulting a hospital representative or visiting our partner donation camps for a professional health checkup before donating.",
                         "check_eligibility",
                         {"step": "result", "eligible": False, "reason": "Medical history deferral"}
                     )
@@ -249,7 +265,7 @@ class AIService:
                     donors = get_compatible_donor_groups(bg_match)
                     donors_str = ", ".join(donors)
                     return (
-                        f"🩸 A person with blood group **{bg_match}** can receive blood from: **{donors_str}**.",
+                        f"A person with blood group **{bg_match}** can receive blood from: **{donors_str}**.",
                         "blood_compatibility",
                         {"blood_group": bg_match, "compatible_donors": donors}
                     )
@@ -258,7 +274,7 @@ class AIService:
                     recipients = BLOOD_COMPATIBILITY.get(bg_match, [])
                     recipients_str = ", ".join(recipients)
                     return (
-                        f"🩸 A person with blood group **{bg_match}** can donate to: **{recipients_str}**.",
+                        f" A person with blood group **{bg_match}** can donate to: **{recipients_str}**.",
                         "blood_compatibility",
                         {"blood_group": bg_match, "compatible_recipients": recipients}
                     )
@@ -281,7 +297,7 @@ class AIService:
                 if camps:
                     camps_list = "\n".join([f"- **{c.name}** in {c.city} ({c.address}) on {c.date_time.strftime('%b %d, %Y')}" for c in camps])
                     return (
-                        f"📍 I found these upcoming blood donation camps in **{city.capitalize()}**:\n\n{camps_list}\n\nWould you like me to guide you on how to register?",
+                        f"I found these upcoming blood donation camps in **{city.capitalize()}**:\n\n{camps_list}\n\nWould you like me to guide you on how to register?",
                         "find_camps",
                         {"city": city, "camp_ids": [c.id for c in camps]}
                     )
@@ -297,7 +313,7 @@ class AIService:
                 if camps:
                     camps_list = "\n".join([f"- **{c.name}** in {c.city} on {c.date_time.strftime('%b %d, %Y')}" for c in camps])
                     return (
-                        f"📍 Here are some upcoming blood donation camps:\n\n{camps_list}\n\nTell me your city (e.g., 'Find camps in Mumbai') to locate camps near you!",
+                        f" Here are some upcoming blood donation camps:\n\n{camps_list}\n\nTell me your city (e.g., 'Find camps in Mumbai') to locate camps near you!",
                         "find_camps",
                         {}
                     )
@@ -323,7 +339,7 @@ class AIService:
                 if donors:
                     donors_list = "\n".join([f"- **{d.user.full_name}** ({d.blood_group}) - Contact: {d.contact_info}" for d in donors])
                     return (
-                        f"🚨 **Urgent Matching Donors Found in {city.capitalize()}!**\n\nHere are available **{bg_match}** donors in {city.capitalize()}:\n\n{donors_list}\n\nPlease contact them immediately or open an Emergency Request on the platform to notify them automatically.",
+                        f" **Urgent Matching Donors Found in {city.capitalize()}!**\n\nHere are available **{bg_match}** donors in {city.capitalize()}:\n\n{donors_list}\n\nPlease contact them immediately or open an Emergency Request on the platform to notify them automatically.",
                         "find_donors",
                         {"blood_group": bg_match, "city": city, "donor_ids": [d.id for d in donors]}
                     )
@@ -339,13 +355,13 @@ class AIService:
                     if donors:
                         donors_list = "\n".join([f"- **{d.user.full_name}** ({d.blood_group}) - Contact: {d.contact_info}" for d in donors])
                         return (
-                            f"🚨 **Compatible matches found for {bg_match} recipient in {city.capitalize()}!**\n\nWhile there is no exact {bg_match} donor, here are compatible donors:\n\n{donors_list}\n\nYou can also launch an official request on our platform.",
+                            f"**Compatible matches found for {bg_match} recipient in {city.capitalize()}!**\n\nWhile there is no exact {bg_match} donor, here are compatible donors:\n\n{donors_list}\n\nYou can also launch an official request on our platform.",
                             "find_donors",
                             {"blood_group": bg_match, "city": city, "donor_ids": [d.id for d in donors]}
                         )
                     else:
                         return (
-                            f"🚨 **Emergency Match Request**\n\nI couldn't find any registered available donors with {bg_match} compatible blood in **{city.capitalize()}**.\n\nPlease use the **Request Blood** page to lodge a priority emergency alert, which broadcasts notification alerts to nearby cities.",
+                            f" **Emergency Match Request**\n\nI couldn't find any registered available donors with {bg_match} compatible blood in **{city.capitalize()}**.\n\nPlease use the **Request Blood** page to lodge a priority emergency alert, which broadcasts notification alerts to nearby cities.",
                             "find_donors",
                             {"blood_group": bg_match, "city": city, "donor_ids": []}
                         )
@@ -357,17 +373,31 @@ class AIService:
                 )
             else:
                 return (
-                    "🚨 **Need Blood?** If you or a loved one are in an emergency, please specify the **blood group** and **city** (e.g., 'I urgently need O+ in Delhi').\n\nYou can also create a formal request on our **Request Blood** page to alert all matching local donors.",
+                    " **Need Blood?** If you or a loved one are in an emergency, please specify the **blood group** and **city** (e.g., 'I urgently need O+ in Delhi').\n\nYou can also create a formal request on our **Request Blood** page to alert all matching local donors.",
                     "request_blood",
                     {}
                 )
 
-        # 6. Medical FAQs
+        # 6. Medical FAQs (WHO & Red Cross Guidelines)
+        if any(w in msg_lower for w in ["who", "red cross", "guidelines", "standard"]):
+            return FAQ_RESPONSES["guidelines"], "ask_faqs", {"topic": "guidelines"}
+        if any(w in msg_lower for w in ["alcohol", "beer", "smoke", "smoking", "cigarette"]):
+            return FAQ_RESPONSES["alcohol_smoking"], "ask_faqs", {"topic": "alcohol_smoking"}
+        if any(w in msg_lower for w in ["tattoo", "piercing"]):
+            return FAQ_RESPONSES["tattoo_piercing"], "ask_faqs", {"topic": "tattoo_piercing"}
+        if any(w in msg_lower for w in ["travel", "malaria", "zika", "dengue", "abroad", "vacation"]):
+            return FAQ_RESPONSES["travel_deferral"], "ask_faqs", {"topic": "travel_deferral"}
+        if any(w in msg_lower for w in ["medication", "medicine", "antibiotic", "aspirin", "pill"]):
+            return FAQ_RESPONSES["medication"], "ask_faqs", {"topic": "medication"}
+        if any(w in msg_lower for w in ["eat", "food", "diet", "iron", "water", "pre donation"]):
+            return FAQ_RESPONSES["diet_pre"], "ask_faqs", {"topic": "diet_pre"}
+        if any(w in msg_lower for w in ["snack", "post donation", "recover diet"]):
+            return FAQ_RESPONSES["diet_post"], "ask_faqs", {"topic": "diet_post"}
         if "safety" in msg_lower or "safe" in msg_lower:
             return FAQ_RESPONSES["safety"], "ask_faqs", {"topic": "safety"}
         if "process" in msg_lower or "how to donate" in msg_lower or "what happens" in msg_lower:
             return FAQ_RESPONSES["process"], "ask_faqs", {"topic": "process"}
-        if "recovery" in msg_lower or "after donating" in msg_lower or "regenerate" in msg_lower:
+        if "recovery" in msg_lower or "regenerate" in msg_lower:
             return FAQ_RESPONSES["recovery"], "ask_faqs", {"topic": "recovery"}
         if "benefit" in msg_lower or "why donate" in msg_lower or "advantages" in msg_lower:
             return FAQ_RESPONSES["benefits"], "ask_faqs", {"topic": "benefits"}
@@ -384,7 +414,7 @@ class AIService:
             if avail_slot:
                 camp = db.query(DonationCamp).filter(DonationCamp.id == avail_slot.camp_id).first()
                 return (
-                    f"📅 **AI Booking Assistant Suggestion**:\n\n"
+                    f" **AI Booking Assistant Suggestion**:\n\n"
                     f"I found an available donation slot at **{camp.name}**:\n"
                     f"• **Date**: {avail_slot.date}\n"
                     f"• **Time**: {avail_slot.start_time} - {avail_slot.end_time}\n"
@@ -395,7 +425,7 @@ class AIService:
                 )
             else:
                 return (
-                    "📅 No active open donation slots are registered currently. Let me know if you would like me to list regional camps instead!",
+                    " No active open donation slots are registered currently. Let me know if you would like me to list regional camps instead!",
                     "appointment_assistant",
                     {}
                 )
@@ -423,14 +453,14 @@ class AIService:
                     )
                 else:
                     return (
-                        f"🚨 I checked all registered inventory, but no hospitals currently report available units of **{bg_match}**.\n\n"
+                        f"I checked all registered inventory, but no hospitals currently report available units of **{bg_match}**.\n\n"
                         f"Please coordinate with an emergency request on the dashboard to notify nearby eligible donors directly.",
                         "emergency_routing",
                         {}
                     )
             else:
                 return (
-                    "🚨 Please specify the blood group you need routing information for (e.g. 'Route AB- emergency' or 'Who has O+ stock?').",
+                    " Please specify the blood group you need routing information for (e.g. 'Route AB- emergency' or 'Who has O+ stock?').",
                     "emergency_routing",
                     {}
                 )
@@ -438,7 +468,7 @@ class AIService:
         # 9. AI Slot Optimization (for Hospital / NGO / Admin review)
         if "optimize" in msg_lower or "prediction" in msg_lower or "analytics" in msg_lower:
             return (
-                "📊 **AI Slot Capacity Optimization Recommendations**:\n\n"
+                " **AI Slot Capacity Optimization Recommendations**:\n\n"
                 "• **Saturday Morning Slots**: High donor concentration predicted. Recommending +5 seats capacity increase.\n"
                 "• **Wednesday/Weekday Slots**: Low turnouts predicted. Recommend merging morning slots to optimize clinical staff placement.\n"
                 "• **Emergency Shortages**: O- and O+ groups are running low globally. Recommend sending targeted push reminder alerts.",
@@ -452,7 +482,7 @@ class AIService:
                 profile = db.query(DonorProfile).filter(DonorProfile.user_id == user_id).first()
                 if profile:
                     return (
-                        f"❤️ **AI Donor Profile Summary**:\n\n"
+                        f" **AI Donor Profile Summary**:\n\n"
                         f"• **Blood Group**: {profile.blood_group}\n"
                         f"• **Total Contributions**: {profile.total_donations} unit(s) donated\n"
                         f"• **Current Streak**: {profile.donation_streak} streak count\n"

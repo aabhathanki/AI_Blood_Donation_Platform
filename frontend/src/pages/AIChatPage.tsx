@@ -195,12 +195,14 @@ export const AIChatPage: React.FC = () => {
               </p>
               
               {/* Preset suggestion bubbles */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-lg mx-auto pt-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-xl mx-auto pt-4">
                 {[
-                  "Can I donate blood if I got a tattoo recently?",
-                  "I urgently need O Negative blood in Bengaluru",
+                  "What should I eat & drink before donating blood?",
+                  "Can I donate if I got a tattoo or piercing recently?",
+                  "What are WHO & Red Cross guidelines on travel deferrals?",
+                  "What are the medication rules (antibiotics, aspirin) for donors?",
                   "Check compatibility: who can receive AB- blood?",
-                  "Find upcoming donation camps near Bangalore",
+                  "I urgently need O Negative blood in Bengaluru",
                 ].map((preset, index) => (
                   <button
                     key={index}

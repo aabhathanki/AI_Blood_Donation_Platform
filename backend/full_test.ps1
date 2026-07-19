@@ -46,15 +46,25 @@ function PATCH($path, $body, $label, $tok) {
     } catch { err "PATCH $path ($label): $($_.ErrorDetails.Message)"; return $null }
 }
 
+function PUT($path, $body, $label, $tok) {
+    $h = @{ "Content-Type"="application/json"; "Authorization"="Bearer $tok" }
+    $json = if ($body -is [string]) { $body } else { $body | ConvertTo-Json -Depth 5 }
+    try {
+        $r = Invoke-RestMethod -Uri "$base$path" -Method PUT -Body $json -Headers $h
+        ok "PUT $path ($label)"
+        return $r
+    } catch { err "PUT $path ($label): $($_.ErrorDetails.Message)"; return $null }
+}
+
 # ============================================================
 hdr "1. AUTH - REGISTRATION (All 5 Roles)"
 # ============================================================
 $roles = @(
-    @{name="Demo Donor2"; email="donor2@demo.com"; password="demo1234"; role="donor"},
-    @{name="Demo Recipient2"; email="recip2@demo.com"; password="demo1234"; role="recipient"},
-    @{name="Demo Admin2"; email="admin2@demo.com"; password="demo1234"; role="admin"},
-    @{name="Demo Hospital2"; email="hosp2@demo.com"; password="demo1234"; role="hospital"},
-    @{name="Demo Organizer"; email="org2@demo.com"; password="demo1234"; role="organizer"}
+    @{full_name="Demo Donor2"; email="donor2@demo.com"; password="demo1234"; role="donor"},
+    @{full_name="Demo Recipient2"; email="recip2@demo.com"; password="demo1234"; role="recipient"},
+    @{full_name="Demo Admin2"; email="admin2@demo.com"; password="demo1234"; role="admin"},
+    @{full_name="Demo Hospital2"; email="hosp2@demo.com"; password="demo1234"; role="hospital_ngo"},
+    @{full_name="Demo Organizer"; email="org2@demo.com"; password="demo1234"; role="organizer"}
 )
 foreach ($role in $roles) {
     $body = $role | ConvertTo-Json
@@ -94,7 +104,7 @@ $recs = GET "/donors/recommendations?blood_group=O%2B&latitude=12.9716&longitude
 if ($recs) { info "Found $($recs.Count) eligible donor(s)" }
 
 # Get all donors (admin)
-$allDonors = GET "/donors/" "All Donors [admin]" $adminTok
+$allDonors = GET "/admin/users?role=donor" "All Donors [admin]" $adminTok
 if ($allDonors) { info "Total registered donors in DB: $($allDonors.Count)" }
 
 # ============================================================
@@ -131,7 +141,7 @@ if ($newReq) {
 }
 
 # My requests as recipient
-GET "/requests/my" "My Requests [recipient]" $recipTok | Out-Null
+GET "/requests/" "My Requests [recipient]" $recipTok | Out-Null
 
 # ============================================================
 hdr "6. DONATION CAMPS"
@@ -175,8 +185,8 @@ if ($allCamps -and $allCamps.Count -gt 0) {
     
     # Create a slot for this camp
     $slotDate = (Get-Date).AddDays(15).ToString("yyyy-MM-dd")
-    $slot = POST "/slots/" @{
-        camp_id=$c.id; date=$slotDate; start_time="09:00"; end_time="17:00"; max_capacity=50
+    $slot = POST "/slots/?camp_id=$($c.id)" @{
+        date=$slotDate; start_time="09:00"; end_time="17:00"; capacity=50
     } "Create Slot [hospital]" $hospTok
     
     if ($slot) {
@@ -184,19 +194,19 @@ if ($allCamps -and $allCamps.Count -gt 0) {
         $slotId = $slot.id
         
         # List slots for camp
-        GET "/slots/camp/$($c.id)" "List Slots for Camp" $donorTok | Out-Null
+        GET "/slots/$($c.id)" "List Slots for Camp" $donorTok | Out-Null
         
         # Book an appointment
-        $appt = POST "/appointments/" @{ slot_id=$slotId } "Book Appointment [donor]" $donorTok
+        $appt = POST "/appointments/?slot_id=$slotId" $null "Book Appointment [donor]" $donorTok
         if ($appt) {
             info "Appointment id=$($appt.id) status=$($appt.status)"
             $apptId = $appt.id
             
             # Admin approves appointment
-            PATCH "/appointments/$apptId/status" @{ status="approved" } "Approve Appointment [admin]" $adminTok | Out-Null
+            PATCH "/appointments/$apptId/approve" $null "Approve Appointment [admin]" $adminTok | Out-Null
             
             # Donor's appointments
-            GET "/appointments/my" "My Appointments [donor]" $donorTok | Out-Null
+            GET "/appointments/mine" "My Appointments [donor]" $donorTok | Out-Null
         }
     }
 }
@@ -204,16 +214,16 @@ if ($allCamps -and $allCamps.Count -gt 0) {
 # ============================================================
 hdr "8. BLOOD INVENTORY"
 # ============================================================
-# Add inventory for hospital
-POST "/inventory/" @{ blood_group="O+"; units_available=50; min_threshold=10 } "Add Inventory O+ [hospital]" $hospTok | Out-Null
-POST "/inventory/" @{ blood_group="A+"; units_available=30; min_threshold=8  } "Add Inventory A+ [hospital]" $hospTok | Out-Null
-POST "/inventory/" @{ blood_group="B-"; units_available=5;  min_threshold=10 } "Add Inventory B- [hospital]" $hospTok | Out-Null
-POST "/inventory/" @{ blood_group="AB-";units_available=8;  min_threshold=10 } "Add Inventory AB- [hospital]" $hospTok | Out-Null
+# Add inventory for hospital using PUT /inventory/{blood_group}
+PUT "/inventory/O%2B" @{ units_available=50 } "Add Inventory O+ [hospital]" $hospTok | Out-Null
+PUT "/inventory/A%2B" @{ units_available=30 } "Add Inventory A+ [hospital]" $hospTok | Out-Null
+PUT "/inventory/B-" @{ units_available=3 } "Add Inventory B- [hospital]" $hospTok | Out-Null
+PUT "/inventory/AB-" @{ units_available=8 } "Add Inventory AB- [hospital]" $hospTok | Out-Null
 
 # View hospital inventory
 GET "/inventory/" "My Inventory [hospital]" $hospTok | Out-Null
 # Low stock alerts
-GET "/inventory/alerts" "Low Stock Alerts [hospital]" $hospTok | Out-Null
+GET "/inventory/shortages" "Low Stock Alerts [hospital]" $hospTok | Out-Null
 
 # ============================================================
 hdr "9. NOTIFICATIONS"
@@ -239,25 +249,34 @@ hdr "11. ADMIN PANEL"
 # ============================================================
 $users = GET "/admin/users"            "All Users [admin]"        $adminTok
 if ($users) { info "Platform has $($users.Count) registered users" }
-GET "/admin/pending-requests"          "Pending Requests [admin]" $adminTok | Out-Null
-GET "/admin/pending-camps"             "Pending Camps [admin]"    $adminTok | Out-Null
 
 # Verify a donor
-if ($donorMe) {
-    PATCH "/admin/verify-donor/$($donorMe.id)" @{} "Verify Donor [admin]" $adminTok | Out-Null
+$donorProfile = GET "/donors/profile" "Get Donor Profile" $donorTok
+if ($donorProfile) {
+    POST "/donors/$($donorProfile.id)/verify" @{} "Verify Donor [admin]" $adminTok | Out-Null
 }
 
 # ============================================================
 hdr "12. AI CHAT"
 # ============================================================
-$aiMsg1 = POST "/ai/chat" @{ message="What is the universal donor blood group?" } "AI Chat - Universal Donor Q" $donorTok
-if ($aiMsg1) { info "AI Response (snippet): $($aiMsg1.response.Substring(0, [Math]::Min(120, $aiMsg1.response.Length)))..." }
+# Create a conversation
+$conv = POST "/ai/conversations" @{ title="Integration Test Conversation" } "Create AI Conversation" $donorTok
+if ($conv) {
+    $convId = $conv.id
+    
+    $aiMsg1 = POST "/ai/conversations/$convId/messages" @{ content="What is the universal donor blood group?" } "AI Chat - Universal Donor Q" $donorTok
+    if ($aiMsg1) { info "AI Response (snippet): $($aiMsg1.response.Substring(0, [Math]::Min(120, $aiMsg1.response.Length)))..." }
 
-$aiMsg2 = POST "/ai/chat" @{ message="Am I eligible to donate blood today?" } "AI Chat - Eligibility Check" $donorTok
-if ($aiMsg2) { info "AI Response (snippet): $($aiMsg2.response.Substring(0, [Math]::Min(120, $aiMsg2.response.Length)))..." }
+    $aiMsg2 = POST "/ai/conversations/$convId/messages" @{ content="Am I eligible to donate blood today?" } "AI Chat - Eligibility Check" $donorTok
+    if ($aiMsg2) { info "AI Response (snippet): $($aiMsg2.response.Substring(0, [Math]::Min(120, $aiMsg2.response.Length)))..." }
 
-$aiMsg3 = POST "/ai/chat" @{ message="I need O+ blood urgently in Bangalore" } "AI Chat - Emergency Request" $recipTok
-if ($aiMsg3) { info "AI Response (snippet): $($aiMsg3.response.Substring(0, [Math]::Min(120, $aiMsg3.response.Length)))..." }
+    # Also test recipient user starting a conversation
+    $recipConv = POST "/ai/conversations" @{ title="Recipient Emergency Chat" } "Create Recipient AI Conversation" $recipTok
+    if ($recipConv) {
+        $aiMsg3 = POST "/ai/conversations/$($recipConv.id)/messages" @{ content="I need O+ blood urgently in Bangalore" } "AI Chat - Emergency Request" $recipTok
+        if ($aiMsg3) { info "AI Response (snippet): $($aiMsg3.response.Substring(0, [Math]::Min(120, $aiMsg3.response.Length)))..." }
+    }
+}
 
 GET "/ai/conversations" "AI Conversation History [donor]" $donorTok | Out-Null
 
